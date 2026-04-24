@@ -646,26 +646,9 @@ function SummaryPage({ setPage, privateSbData, briefhereSbData }) {
 
   const getGoal = (y) => customGoals[y] || GOAL_BY_YEAR[y] || 1200000;
 
-  // Manual job count — เฉพาะปี 2023 ลงไป
-  const [manualCounts, setManualCounts] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("pa_counts")||"{}"); } catch{ return {}; }
-  });
-  const [editCount, setEditCount] = useState(null);
-
-  const saveCount = () => {
-    if (!editCount) return;
-    const updated = {...manualCounts, [editCount.year]: +editCount.val};
-    setManualCounts(updated);
-    try { localStorage.setItem("pa_counts", JSON.stringify(updated)); } catch{}
-    setEditCount(null);
-  };
-
-  const getCount = (y) => {
-    const real = privData.filter(r=>getYear(r.pay_date||r.due_date)===y).length
-               + bhData.filter(r=>getYear(r.pay_date||r.due_date)===y).length;
-    // ปี 2023 ลงไป — ใช้ manual count เพราะไม่มีข้อมูลใน SB
-    return y <= 2023 ? (manualCounts[y] ?? real) : real;
-  };
+  const getCount = (y) =>
+    privData.filter(r=>getYear(r.pay_date||r.due_date)===y).length
+    + bhData.filter(r=>getYear(r.pay_date||r.due_date)===y).length;
 
   // recalc with custom goals
   const calcWithGoal = (y) => {
@@ -684,7 +667,6 @@ function SummaryPage({ setPage, privateSbData, briefhereSbData }) {
           const d = calcWithGoal(y);
           const isThis = y===THIS_YEAR;
           const cnt = getCount(y);
-          const isOld = y <= 2023;
           return (
             <div key={y} className={`prog-card${isThis?" prog-card-accent":""}`} style={{margin:0,minWidth:200,flex:"1 1 200px",maxWidth:280}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -720,25 +702,7 @@ function SummaryPage({ setPage, privateSbData, briefhereSbData }) {
               <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:11,color:"var(--muted)"}}>
                 <span>{d.prog.toFixed(1)}%</span>
 
-                {/* Editable count for old years */}
-                {isOld && editCount?.year===y ? (
-                  <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                    <input type="number" value={editCount.val}
-                      onChange={e=>setEditCount({...editCount,val:e.target.value})}
-                      onKeyDown={e=>e.key==="Enter"&&saveCount()}
-                      style={{width:60,padding:"2px 6px",borderRadius:5,border:"1px solid var(--accent)",
-                        background:"var(--sur2)",color:"var(--txt)",fontSize:11,textAlign:"center"}}
-                      autoFocus/>
-                    <button onClick={saveCount} style={{fontSize:10,padding:"2px 6px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",cursor:"pointer"}}>✓</button>
-                    <button onClick={()=>setEditCount(null)} style={{fontSize:10,padding:"2px 4px",borderRadius:5,border:"1px solid var(--bdr)",background:"transparent",color:"var(--muted)",cursor:"pointer"}}>✕</button>
-                  </div>
-                ) : (
-                  <span style={{display:"flex",alignItems:"center",gap:4}}>
-                    {cnt} งาน
-                    {isOld && <button onClick={()=>setEditCount({year:y,val:cnt})}
-                      style={{fontSize:10,padding:"1px 5px",borderRadius:5,border:"1px solid var(--bdr)",background:"transparent",color:"var(--muted)",cursor:"pointer"}}>✎</button>}
-                  </span>
-                )}
+                <span>{cnt} งาน</span>
               </div>
             </div>
           );
@@ -764,7 +728,6 @@ function SummaryPage({ setPage, privateSbData, briefhereSbData }) {
               const d = calcWithGoal(y);
               const cnt = getCount(y);
               const isThis = y===THIS_YEAR;
-              const isOld = y <= 2023;
               return (
                 <tr key={y} style={isThis?{background:"rgba(99,102,241,.05)"}:{}}>
                   <td><span style={{fontFamily:"monospace",fontWeight:isThis?800:600,color:isThis?"var(--accent)":"var(--txt)"}}>{y}{isThis?" ✦":""}</span></td>
@@ -777,9 +740,7 @@ function SummaryPage({ setPage, privateSbData, briefhereSbData }) {
                   <td className="r mono">
                     <span style={{color:d.prog>=100?"var(--ok)":d.prog>=70?"var(--accent)":"var(--warn)"}}>{d.prog.toFixed(1)}%</span>
                   </td>
-                  <td style={{cursor:isOld?"pointer":"default"}} onClick={()=>isOld&&setEditCount({year:y,val:cnt})}>
-                    {cnt} งาน {isOld && <span style={{fontSize:10,opacity:.5}}>✎</span>}
-                  </td>
+                  <td>{cnt} งาน</td>
                 </tr>
               );
             })}
@@ -1157,8 +1118,6 @@ function PrivatePage({ tick, triggerRefresh, onDataLoad }) {
       <PageHeader title="งานนอก (Private)" sub="รายได้ส่วนตัว — Net หัก 3% · แยกตามปี"
         action={<button className="btn-primary" onClick={()=>setAddModal(true)}>+ เพิ่มงาน</button>}/>
 
-      <Toast msg={sbMsg} type={sbStatus==="error"?"error":sbStatus==="loading"?"info":"ok"}/>
-
       {/* Stat cards */}
       <div style={{marginBottom:6,fontSize:11,color:"var(--muted)",fontFamily:"monospace"}}>
         สรุป{yearLabel} · {filtered.length} รายการ
@@ -1428,8 +1387,6 @@ function BriefherePage({ tick, triggerRefresh, onDataLoad }) {
         action={
           <button className="btn-primary" onClick={()=>setAddModal(true)}>+ เพิ่มงาน</button>
         }/>
-
-      <Toast msg={sbMsg} type={sbStatus==="error"?"error":sbStatus==="loading"?"info":"ok"}/>
 
       <div style={{marginBottom:6,fontSize:11,color:"var(--muted)",fontFamily:"monospace"}}>สรุป{yearLabel} · {filtered.length} รายการ</div>
       <div className="stat-row">
