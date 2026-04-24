@@ -663,7 +663,8 @@ function SummaryPage({ setPage, privateSbData, briefhereSbData }) {
   const getCount = (y) => {
     const real = privData.filter(r=>getYear(r.pay_date||r.due_date)===y).length
                + bhData.filter(r=>getYear(r.pay_date||r.due_date)===y).length;
-    return y <= 2024 ? (manualCounts[y] ?? real) : real;
+    // ปี 2023 ลงไป — ใช้ manual count เพราะไม่มีข้อมูลใน SB
+    return y <= 2023 ? (manualCounts[y] ?? real) : real;
   };
 
   // recalc with custom goals
@@ -683,7 +684,7 @@ function SummaryPage({ setPage, privateSbData, briefhereSbData }) {
           const d = calcWithGoal(y);
           const isThis = y===THIS_YEAR;
           const cnt = getCount(y);
-          const isOld = y <= 2024;
+          const isOld = y <= 2023;
           return (
             <div key={y} className={`prog-card${isThis?" prog-card-accent":""}`} style={{margin:0,minWidth:200,flex:"1 1 200px",maxWidth:280}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -763,7 +764,7 @@ function SummaryPage({ setPage, privateSbData, briefhereSbData }) {
               const d = calcWithGoal(y);
               const cnt = getCount(y);
               const isThis = y===THIS_YEAR;
-              const isOld = y <= 2024;
+              const isOld = y <= 2023;
               return (
                 <tr key={y} style={isThis?{background:"rgba(99,102,241,.05)"}:{}}>
                   <td><span style={{fontFamily:"monospace",fontWeight:isThis?800:600,color:isThis?"var(--accent)":"var(--txt)"}}>{y}{isThis?" ✦":""}</span></td>
@@ -1716,9 +1717,7 @@ function MaintTable({ data, loading, onEdit, onConfirm }) {
                     ? <div style={{fontSize:11,color:"var(--muted)",lineHeight:1.6,whiteSpace:"pre-wrap",wordBreak:"break-word",marginBottom:3}}>{m.note}</div>
                     : <span style={{fontSize:11,color:"var(--bdr)",fontStyle:"italic"}}>ว่าง</span>
                   }
-                  <button onClick={()=>onEdit(m)} style={{display:"block",marginTop:2,fontSize:11,color:"var(--accent)",background:"none",border:"none",padding:0,cursor:"pointer",textDecoration:"underline"}}>
-                    {hasNote?"แก้ไข":"+ Note"}
-                  </button>
+
                 </td>
                 <td>
                   <div className="row-actions">
@@ -1739,7 +1738,9 @@ function MaintTable({ data, loading, onEdit, onConfirm }) {
 function MaintHomePage({ tick, triggerRefresh }) {
   const { data, loading, modal, setModal, confirm, setConfirm, handleSave, doDelete } = useMaintPage("home", triggerRefresh);
 
-  // stat summary
+  const mainItems = data.filter(m=>!m.item?.includes("ประกัน"));
+  const insurItems = data.filter(m=>m.item?.includes("ประกัน"));
+
   const overdue = data.filter(m=>m.next_date&&m.next_date!=="-"&&diffDays(m.next_date)<0).length;
   const warn    = data.filter(m=>m.next_date&&m.next_date!=="-"&&(()=>{const d=diffDays(m.next_date);return d>=0&&d<=30;})()).length;
   const ok      = data.length - overdue - warn;
@@ -1770,7 +1771,12 @@ function MaintHomePage({ tick, triggerRefresh }) {
         <span className="mst mst-ok">ปกติ</span>
       </div>
 
-      <MaintTable data={data} loading={loading} onEdit={m=>setModal({mode:"edit",row:m})} onConfirm={m=>setConfirm(m)}/>
+      <MaintTable data={mainItems} loading={loading} onEdit={m=>setModal({mode:"edit",row:m})} onConfirm={m=>setConfirm(m)}/>
+
+      {insurItems.length > 0 && <>
+        <SecTitle>🛡 ประกัน</SecTitle>
+        <MaintTable data={insurItems} loading={false} onEdit={m=>setModal({mode:"edit",row:m})} onConfirm={m=>setConfirm(m)}/>
+      </>}
 
       {modal && (
         <Modal title={modal.mode==="add"?"เพิ่มรายการบ้าน":"แก้ไขรายการบ้าน"} onClose={()=>setModal(null)}>
@@ -1829,16 +1835,20 @@ function MaintCarPage({ tick, triggerRefresh }) {
 
       {/* Per-car grouped when "all" selected */}
       {selCar==="all"
-        ? cars.map(car=>(
-            <div key={car} style={{marginBottom:20}}>
-              <SecTitle>🚗 {car}</SecTitle>
-              <MaintTable
-                data={data.filter(m=>m.car===car)}
-                loading={loading}
-                onEdit={m=>setModal({mode:"edit",row:m})}
-                onConfirm={m=>setConfirm(m)}/>
-            </div>
-          ))
+        ? cars.map(car=>{
+            const carMain = data.filter(m=>m.car===car&&!m.item?.includes("ประกัน"));
+            const carInsur = data.filter(m=>m.car===car&&m.item?.includes("ประกัน"));
+            return (
+              <div key={car} style={{marginBottom:20}}>
+                <SecTitle>🚗 {car}</SecTitle>
+                <MaintTable data={carMain} loading={loading} onEdit={m=>setModal({mode:"edit",row:m})} onConfirm={m=>setConfirm(m)}/>
+                {carInsur.length>0 && <>
+                  <SecTitle>🛡 ประกัน — {car}</SecTitle>
+                  <MaintTable data={carInsur} loading={false} onEdit={m=>setModal({mode:"edit",row:m})} onConfirm={m=>setConfirm(m)}/>
+                </>}
+              </div>
+            );
+          })
         : <MaintTable data={filtered} loading={loading} onEdit={m=>setModal({mode:"edit",row:m})} onConfirm={m=>setConfirm(m)}/>
       }
 
