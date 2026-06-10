@@ -60,6 +60,25 @@ async function sbDelete(table, id) {
   if (!res.ok) throw new Error(`Delete failed: ${res.status}`);
 }
 
+async function sbSelectExpenses(year, month) {
+  const from = `${year}-${String(month).padStart(2,"0")}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const to = `${year}-${String(month).padStart(2,"0")}-${String(lastDay).padStart(2,"0")}`;
+  const url = `${SB_URL}/rest/v1/expenses?select=*&date=gte.${from}&date=lte.${to}&order=date.desc`;
+  const res = await fetch(url, { headers: {...SB_HEADERS, "Prefer": ""} });
+  if (!res.ok) throw new Error(`โหลดข้อมูลไม่สำเร็จ (${res.status}) — กรุณาสร้างตาราง expenses ใน Supabase`);
+  return res.json();
+}
+
+async function sbUpsertExpense(row) {
+  const res = await fetch(`${SB_URL}/rest/v1/expenses`, {
+    method: "POST",
+    headers: {...SB_HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"},
+    body: JSON.stringify([row]),
+  });
+  if (!res.ok) { const err = await res.text(); throw new Error(err); }
+}
+
 // ═══ GOOGLE SHEET CSV URL ════════════════════════════════════
 const SHEET_PRIVATE_URL   = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ4goylPDWkuT9W-lKqINnR75IKrW2k77oYhiF_Oe38G3xS-NLJTkXn7lsL-lZUhHjGizS3JQVAUGF7/pub?output=csv";
 const SHEET_BRIEFHERE_URL = ""; // ใส่ URL Sheet งานเพจตรงนี้
@@ -261,6 +280,14 @@ const STATUS_OPTS = ["WIP", "Finish/Wait", "Done"];
 const CAR_OPTS    = ["BYD Sealion 7", "BYD Seal", "Honda City 2017"];
 const MONTHS_TH   = ["ม.ค.","ก.พ.","มี.ค.","เม.ย.","พ.ค.","มิ.ย.","ก.ค.","ส.ค.","ก.ย.","ต.ค.","พ.ย.","ธ.ค."];
 
+const EXPENSE_CATS = ["อาหาร & เครื่องดื่ม","การเดินทาง","ที่พัก & ยูทิลิตี้","สุขภาพ & ความงาม","ช็อปปิ้ง","ความบันเทิง","การศึกษา","อื่นๆ"];
+const INCOME_CATS  = ["เงินเดือน","รายได้เสริม","โบนัส","ดอกเบี้ย","อื่นๆ"];
+const CAT_ICON = {
+  "อาหาร & เครื่องดื่ม":"🍜","การเดินทาง":"🚗","ที่พัก & ยูทิลิตี้":"🏠",
+  "สุขภาพ & ความงาม":"💊","ช็อปปิ้ง":"🛍️","ความบันเทิง":"🎮","การศึกษา":"📚",
+  "เงินเดือน":"💼","รายได้เสริม":"💰","โบนัส":"🎁","ดอกเบี้ย":"📈","อื่นๆ":"📌",
+};
+
 const NAV_GROUPS = [
   {
     group: "ภาพรวม",
@@ -275,6 +302,12 @@ const NAV_GROUPS = [
       { id:"private",   icon:"◈", label:"งานนอก"     },
       { id:"briefhere", icon:"◉", label:"งานเพจ"     },
       { id:"quotation", icon:"⊞", label:"คำนวณราคา" },
+    ]
+  },
+  {
+    group: "รายรับรายจ่าย",
+    items: [
+      { id:"expenses",   icon:"💳", label:"บัญชีรายจ่าย" },
     ]
   },
   {
@@ -1985,6 +2018,241 @@ function QuotationPage() {
   );
 }
 
+// ═══ EXPENSE PAGE ════════════════════════════════════════════
+function ExpensePage() {
+  const now = new Date();
+  const [year,  setYear]  = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [rows,  setRows]  = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [modal, setModal] = useState(null);
+  const [delId, setDelId] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await sbSelectExpenses(year, month);
+      setRows(data);
+      setErr("");
+    } catch(e) {
+      setErr(e.message);
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [year, month]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const totalIncome  = rows.filter(r=>r.type==="income").reduce((s,r)=>s+Number(r.amount),0);
+  const totalExpense = rows.filter(r=>r.type==="expense").reduce((s,r)=>s+Number(r.amount),0);
+  const balance      = totalIncome - totalExpense;
+
+  const grouped = useMemo(() => {
+    const map = {};
+    [...rows].forEach(r => {
+      const d = r.date?.slice(0,10) || "";
+      if (!map[d]) map[d] = [];
+      map[d].push(r);
+    });
+    return Object.entries(map).sort((a,b)=>b[0].localeCompare(a[0]));
+  }, [rows]);
+
+  const catTotals = useMemo(() => {
+    const map = {};
+    rows.filter(r=>r.type==="expense").forEach(r => {
+      map[r.category] = (map[r.category]||0) + Number(r.amount);
+    });
+    return Object.entries(map).sort((a,b)=>b[1]-a[1]);
+  }, [rows]);
+  const maxCat = catTotals[0]?.[1] || 1;
+
+  const prevMonth = () => { if(month===1){setMonth(12);setYear(y=>y-1);}else setMonth(m=>m-1); };
+  const nextMonth = () => { if(month===12){setMonth(1);setYear(y=>y+1);}else setMonth(m=>m+1); };
+
+  const handleSave = async (row) => {
+    try {
+      await sbUpsertExpense(row);
+      await load();
+      setModal(null);
+    } catch(e) {
+      alert("บันทึกไม่สำเร็จ: " + e.message);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await sbDelete("expenses", id);
+      await load();
+      setDelId(null);
+    } catch(e) {
+      alert("ลบไม่สำเร็จ: " + e.message);
+    }
+  };
+
+  const defaultDate = `${year}-${String(month).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+
+  return (
+    <div className="page">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">รายรับรายจ่าย</h1>
+          <div className="page-sub">บันทึกรายรับและรายจ่ายประจำเดือน</div>
+        </div>
+        <button className="btn-primary" onClick={()=>setModal({mode:"add"})}>+ เพิ่มรายการ</button>
+      </div>
+
+      <div className="exp-month-bar">
+        <button className="exp-mnav" onClick={prevMonth}>‹</button>
+        <span className="exp-mname">{MONTHS_TH[month-1]} {year}</span>
+        <button className="exp-mnav" onClick={nextMonth}>›</button>
+      </div>
+
+      <div className="exp-summary">
+        <div className="exp-card">
+          <div className="exp-card-icon" style={{color:"var(--ok)"}}>↑</div>
+          <div className="exp-card-lbl">รายรับ</div>
+          <div className="exp-card-val" style={{color:"var(--ok)"}}>{money(totalIncome)}</div>
+        </div>
+        <div className="exp-card">
+          <div className="exp-card-icon" style={{color:"var(--danger)"}}>↓</div>
+          <div className="exp-card-lbl">รายจ่าย</div>
+          <div className="exp-card-val" style={{color:"var(--danger)"}}>{money(totalExpense)}</div>
+        </div>
+        <div className="exp-card">
+          <div className="exp-card-icon" style={{color:"var(--accent)"}}>⊜</div>
+          <div className="exp-card-lbl">คงเหลือ</div>
+          <div className="exp-card-val" style={{color:balance>=0?"var(--ok)":"var(--danger)"}}>{balance<0?"-":""}{money(Math.abs(balance))}</div>
+        </div>
+      </div>
+
+      {catTotals.length > 0 && (
+        <>
+          <div className="sec-title">รายจ่ายตามหมวดหมู่</div>
+          <div className="exp-cats">
+            {catTotals.map(([cat,amt])=>(
+              <div key={cat} className="exp-cat-row">
+                <div className="exp-cat-left">
+                  <span>{CAT_ICON[cat]||"📌"}</span>
+                  <span className="exp-cat-name">{cat}</span>
+                </div>
+                <div className="exp-cat-bar-wrap">
+                  <div className="exp-cat-bar" style={{width:`${(amt/maxCat)*100}%`}}/>
+                </div>
+                <div className="exp-cat-amt mono-sm">{money(amt)}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="sec-title">รายการทั้งหมด</div>
+      {loading && <div className="empty">กำลังโหลด...</div>}
+      {!loading && err && <div className="alert-bar alert-danger" style={{marginBottom:14}}>{err}</div>}
+      {!loading && !err && grouped.length===0 && (
+        <div className="empty">ยังไม่มีรายการ — กด "+ เพิ่มรายการ" เพื่อเริ่มต้น</div>
+      )}
+      {grouped.map(([date,txns])=>{
+        const dayNet = txns.reduce((s,r)=>r.type==="income"?s+Number(r.amount):s-Number(r.amount),0);
+        return (
+          <div key={date} className="exp-day-group">
+            <div className="exp-day-header">
+              <span className="exp-day-date">{fmtDate(date)}</span>
+              <span style={{color:dayNet>=0?"var(--ok)":"var(--danger)",fontFamily:"'JetBrains Mono',monospace",fontSize:12}}>
+                {dayNet>=0?"+":""}{money(dayNet)}
+              </span>
+            </div>
+            {txns.map(r=>(
+              <div key={r.id} className="exp-txn" onClick={()=>setModal({mode:"edit",row:r})}>
+                <div className="exp-txn-icon">{CAT_ICON[r.category]||"📌"}</div>
+                <div className="exp-txn-info">
+                  <div className="exp-txn-desc">{r.description||r.category}</div>
+                  <div className="exp-txn-cat muted">{r.category}{r.note?` · ${r.note}`:""}</div>
+                </div>
+                <div className="exp-txn-amt mono-sm" style={{color:r.type==="income"?"var(--ok)":"var(--danger)"}}>
+                  {r.type==="income"?"+":"-"}{money(Number(r.amount))}
+                </div>
+                <button className="exp-del-btn" onClick={e=>{e.stopPropagation();setDelId(r.id);}}>✕</button>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+
+      {modal && (
+        <ExpenseModal
+          initial={modal.mode==="edit"?modal.row:null}
+          defaultDate={defaultDate}
+          onSave={handleSave}
+          onClose={()=>setModal(null)}
+        />
+      )}
+      {delId && (
+        <ConfirmModal msg="ลบรายการนี้?" onOk={()=>handleDelete(delId)} onCancel={()=>setDelId(null)}/>
+      )}
+    </div>
+  );
+}
+
+function ExpenseModal({ initial, defaultDate, onSave, onClose }) {
+  const blank = {
+    id: uid(),
+    type: "expense",
+    category: EXPENSE_CATS[0],
+    amount: "",
+    description: "",
+    date: defaultDate || new Date().toISOString().slice(0,10),
+    note: "",
+  };
+  const [f, setF] = useState(initial ? {...initial, amount: String(initial.amount||"")} : blank);
+  const set = (k,v) => setF(p=>({...p,[k]:v}));
+
+  const cats = f.type==="income" ? INCOME_CATS : EXPENSE_CATS;
+  const valid = f.amount && parseFloat(f.amount)>0 && f.date;
+
+  const handleTypeChange = (t) => {
+    set("type", t);
+    set("category", (t==="income"?INCOME_CATS:EXPENSE_CATS)[0]);
+  };
+
+  return (
+    <Modal title={initial?"แก้ไขรายการ":"เพิ่มรายการ"} onClose={onClose}>
+      <div className="exp-type-toggle">
+        <button className={`exp-type-btn${f.type==="income"?" exp-type-in":""}`} onClick={()=>handleTypeChange("income")}>↑ รายรับ</button>
+        <button className={`exp-type-btn${f.type==="expense"?" exp-type-out":""}`} onClick={()=>handleTypeChange("expense")}>↓ รายจ่าย</button>
+      </div>
+      <Field label="หมวดหมู่">
+        <select className="inp" value={f.category} onChange={e=>set("category",e.target.value)}>
+          {cats.map(c=><option key={c} value={c}>{CAT_ICON[c]||"📌"} {c}</option>)}
+        </select>
+      </Field>
+      <Field label="จำนวนเงิน (บาท)">
+        <input className="inp" type="number" min="0" step="1" placeholder="0"
+          value={f.amount} onChange={e=>set("amount",e.target.value)} autoFocus/>
+      </Field>
+      <Field label="รายละเอียด">
+        <input className="inp" placeholder="เช่น ข้าวกลางวัน, ค่าน้ำมัน..."
+          value={f.description} onChange={e=>set("description",e.target.value)}/>
+      </Field>
+      <Field label="วันที่">
+        <input className="inp" type="date" value={f.date} onChange={e=>set("date",e.target.value)}/>
+      </Field>
+      <Field label="หมายเหตุ">
+        <input className="inp" placeholder="หมายเหตุเพิ่มเติม (ไม่บังคับ)"
+          value={f.note} onChange={e=>set("note",e.target.value)}/>
+      </Field>
+      <div className="modal-actions">
+        <button className="btn-ghost" onClick={onClose}>ยกเลิก</button>
+        <button className="btn-primary" disabled={!valid}
+          onClick={()=>onSave({...f, amount:parseFloat(f.amount)})}>
+          {initial?"บันทึก":"เพิ่มรายการ"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 // ═══ APP ════════════════════════════════════════════════════
 export default function App() {
   const [page, setPage] = useState("overview");
@@ -2040,6 +2308,7 @@ export default function App() {
     if (page==="maint-home")  return <MaintHomePage tick={tick} triggerRefresh={trigger}/>;
     if (page==="maint-car")   return <MaintCarPage  tick={tick} triggerRefresh={trigger}/>;
     if (page==="quotation")   return <QuotationPage/>;
+    if (page==="expenses")    return <ExpensePage/>;
   };
 
   return (
@@ -2077,7 +2346,7 @@ export default function App() {
         {[
           {id:"overview",   icon:"⬡", label:"Overview"},
           {id:"private",    icon:"◈", label:"งานนอก"},
-          {id:"briefhere",  icon:"◉", label:"งานเพจ"},
+          {id:"expenses",   icon:"💳", label:"รายจ่าย"},
           {id:"maint-home", icon:"🏠", label:"บ้าน"},
           {id:"maint-car",  icon:"🚗", label:"รถ"},
         ].map(n=>(
@@ -2351,6 +2620,46 @@ textarea.inp{resize:vertical;min-height:70px;line-height:1.6}
 /* ── PROG CARD ACCENT (summary) ── */
 .prog-card-accent{border-color:rgba(129,140,248,.4)!important;background:linear-gradient(135deg,rgba(129,140,248,.08),rgba(168,85,247,.05))!important}
 
+/* ── EXPENSE PAGE ── */
+.exp-month-bar{display:flex;align-items:center;justify-content:center;gap:16px;margin-bottom:20px;background:var(--sur);border:1px solid var(--bdr);border-radius:14px;padding:12px 20px}
+.exp-mnav{padding:4px 14px;border-radius:8px;border:1px solid var(--bdr);background:transparent;color:var(--muted);font-size:20px;line-height:1;transition:all .15s}
+.exp-mnav:hover{border-color:var(--accent);color:var(--accent)}
+.exp-mname{font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--txt);min-width:120px;text-align:center}
+
+.exp-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:22px}
+.exp-card{background:var(--sur);border:1px solid var(--bdr);border-radius:16px;padding:18px 16px;display:flex;flex-direction:column;gap:4px;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+.exp-card-icon{font-size:22px;font-weight:700;margin-bottom:4px}
+.exp-card-lbl{font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.06em}
+.exp-card-val{font-size:20px;font-weight:800;font-family:'JetBrains Mono',monospace;margin-top:2px}
+
+.exp-cats{background:var(--sur);border:1px solid var(--bdr);border-radius:14px;padding:16px 18px;margin-bottom:22px;display:flex;flex-direction:column;gap:10px}
+.exp-cat-row{display:flex;align-items:center;gap:10px}
+.exp-cat-left{display:flex;align-items:center;gap:7px;min-width:180px;flex-shrink:0}
+.exp-cat-name{font-size:13px;color:var(--txt)}
+.exp-cat-bar-wrap{flex:1;height:6px;background:var(--sur2);border-radius:99px;overflow:hidden}
+.exp-cat-bar{height:100%;background:linear-gradient(90deg,var(--danger),rgba(239,68,68,.5));border-radius:99px;transition:width .6s cubic-bezier(.4,0,.2,1)}
+.exp-cat-amt{min-width:90px;text-align:right}
+
+.exp-day-group{margin-bottom:16px}
+.exp-day-header{display:flex;justify-content:space-between;align-items:center;padding:6px 4px 6px;border-bottom:1px solid var(--bdr);margin-bottom:4px}
+.exp-day-date{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-family:'JetBrains Mono',monospace}
+
+.exp-txn{display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:12px;cursor:pointer;transition:background .12s;position:relative}
+.exp-txn:hover{background:var(--sur2)}
+.exp-txn-icon{font-size:22px;flex-shrink:0;width:38px;height:38px;background:var(--sur2);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.exp-txn-info{flex:1;min-width:0}
+.exp-txn-desc{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.exp-txn-cat{font-size:11px;margin-top:2px}
+.exp-txn-amt{font-size:13px;font-weight:700;white-space:nowrap;flex-shrink:0}
+.exp-del-btn{opacity:0;padding:4px 8px;border-radius:7px;border:1px solid var(--bdr);background:transparent;color:var(--muted);font-size:11px;transition:all .12s;flex-shrink:0}
+.exp-txn:hover .exp-del-btn{opacity:1}
+.exp-del-btn:hover{border-color:var(--danger);color:var(--danger)}
+
+.exp-type-toggle{display:flex;gap:0;border-radius:10px;overflow:hidden;border:1px solid var(--bdr)}
+.exp-type-btn{flex:1;padding:9px;border:none;background:transparent;color:var(--muted);font-size:13px;font-weight:600;transition:all .15s}
+.exp-type-in{background:rgba(16,185,129,.15)!important;color:var(--ok)!important}
+.exp-type-out{background:rgba(239,68,68,.12)!important;color:var(--danger)!important}
+
 /* ══ RESPONSIVE — TABLET (≤1024px) ══════════════════════════ */
 @media(max-width:1024px){
   .sidebar{width:64px}
@@ -2417,6 +2726,14 @@ textarea.inp{resize:vertical;min-height:70px;line-height:1.6}
   /* ── Income blocks ── */
   .income-blocks{flex-direction:column;gap:8px}
   .income-plus{display:none}
+
+  /* ── Expense page ── */
+  .exp-summary{grid-template-columns:repeat(3,1fr);gap:8px}
+  .exp-card{padding:12px 10px}
+  .exp-card-val{font-size:14px}
+  .exp-cat-left{min-width:130px}
+  .exp-cat-name{font-size:11px}
+  .exp-del-btn{opacity:1}
 
   /* ── Filters — scroll horizontal ── */
   .filter-row{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px;
